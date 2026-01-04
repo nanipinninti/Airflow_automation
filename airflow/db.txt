@@ -1,0 +1,76 @@
+CREATE TABLE students (
+    id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name VARCHAR(20),
+    age INT,
+    class INT
+);
+
+CREATE TABLE files_master (
+    id              UUID PRIMARY KEY,
+    filename        TEXT NOT NULL,
+    bucket          TEXT NOT NULL,
+    path            TEXT NOT NULL,
+    source          TEXT,
+    size_bytes      BIGINT,
+    uploaded_at     TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    
+    status          VARCHAR(20) NOT NULL DEFAULT 'UPLOADED',
+    error_message   TEXT,
+
+    CONSTRAINT files_master_status_chk
+        CHECK (status IN ('UPLOADED', 'PROCESSING', 'SUCCESS', 'FAILED'))
+);
+
+CREATE INDEX idx_files_master_status ON files_master(status);
+CREATE INDEX idx_files_master_path ON files_master(path);
+
+CREATE TABLE file_runs (
+    id              UUID PRIMARY KEY,
+    file_id         UUID NOT NULL REFERENCES files_master(id) ON DELETE CASCADE,
+    airflow_run_id  TEXT NOT NULL,
+    
+    started_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    completed_at    TIMESTAMP WITH TIME ZONE,
+    
+    status          VARCHAR(20) NOT NULL DEFAULT 'RUNNING',
+    error_message   TEXT,
+
+    CONSTRAINT file_runs_status_chk
+        CHECK (status IN ('RUNNING', 'SUCCESS', 'FAILED'))
+);
+
+CREATE INDEX idx_file_runs_file_id ON file_runs(file_id);
+CREATE INDEX idx_file_runs_status ON file_runs(status);
+
+
+DROP FUNCTION IF EXISTS notify_student_change() CASCADE;
+
+-- Statement-level trigger function that fires once per INSERT/UPDATE/DELETE statement
+-- This is more efficient for bulk operations as it sends only one notification
+-- regardless of how many rows are affected (e.g., 1000 inserts = 1 notification)
+CREATE OR REPLACE FUNCTION notify_student_change()
+RETURNS trigger AS $$
+BEGIN
+  -- Send notification with operation type
+  -- The frontend will fetch all records when it receives this notification
+  PERFORM pg_notify('student_events', json_build_object(
+    'operation', TG_OP,
+    'timestamp', NOW()
+  )::text);
+  
+  -- For statement-level triggers, RETURN NULL is appropriate
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP TRIGGER IF EXISTS student_change_trigger ON students;
+
+-- Statement-level trigger: fires once per statement, not per row
+-- This is much more efficient for bulk inserts (e.g., 1000 rows = 1 notification instead of 1000)
+CREATE TRIGGER student_change_trigger
+AFTER INSERT OR UPDATE OR DELETE ON students
+FOR EACH STATEMENT
+EXECUTE FUNCTION notify_student_change();
+
+
