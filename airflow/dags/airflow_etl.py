@@ -27,40 +27,39 @@ def get_pg_conn():
 # -------------------------------------
 def register_file_and_run(**context):
     conf = context["dag_run"].conf
-    file_id = conf["file_id"]
-    bucket = conf["bucket"]
-    key = conf["key"]
-    size = conf.get("size", None)
-    airflow_run_id = context["run_id"]
 
-    filename = key.split("/")[-1]
-    run_id = str(uuid.uuid4())
-    context["ti"].xcom_push(key="run_id", value=run_id)
+    file_id = conf["file_id"]
+    dag_run_id = context["run_id"]        # ✅ real airflow dag_run_id
+    dag_id = context["dag"].dag_id
+
+    # 👉 initial status (example: 1 = RUNNING / PROCESSING)
+    status_id = 2
 
     conn = get_pg_conn()
     cur = conn.cursor()
 
-    # UPSERT into files_master
     cur.execute("""
-        INSERT INTO files_master (id, filename, bucket, path, size_bytes, status)
-        VALUES (%s,%s,%s,%s,%s,'PROCESSING')
-        ON CONFLICT (id)
-        DO UPDATE SET status='PROCESSING', error_message=NULL;
-    """, (file_id, filename, bucket, key, size))
-
-    # Insert into file_runs
-    cur.execute("""
-        INSERT INTO file_runs (id, file_id, airflow_run_id, status)
-        VALUES (%s,%s,%s,'RUNNING');
-    """, (run_id, file_id, airflow_run_id))
+        INSERT INTO dag_runs (
+            dag_run_id,
+            dag_id,
+            file_id,
+            status_id
+        )
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (dag_run_id)
+        DO NOTHING
+    """, (
+        dag_run_id,
+        dag_id,
+        file_id,
+        status_id
+    ))
 
     conn.commit()
     cur.close()
     conn.close()
 
-    print("Registered successfully")
-
-
+    print("dag_runs record created ✅")
 # -------------------------------------
 # Task 2 - Download S3 file
 # -------------------------------------
@@ -169,73 +168,45 @@ def parse_and_insert(**context):
 # Task 5 - Success Update
 # -------------------------------------
 def mark_success(**context):
-    conf = context["dag_run"].conf
-    file_id = conf["file_id"]
-    run_id = context["ti"].xcom_pull(key="run_id")
+    dag_run_id = context["run_id"]
 
     conn = get_pg_conn()
     cur = conn.cursor()
 
     cur.execute("""
-        UPDATE files_master
-        SET status='SUCCESS', error_message=NULL
-        WHERE id=%s;
-    """, (file_id,))
-
-    cur.execute("""
-        UPDATE file_runs
-        SET status='SUCCESS', completed_at=NOW(), error_message=NULL
-        WHERE id=%s;
-    """, (run_id,))
+        UPDATE dag_runs
+        SET status_id = 3
+        WHERE dag_run_id = %s;
+    """, (dag_run_id,))
 
     conn.commit()
     cur.close()
     conn.close()
 
-    print("SUCCESS updated")
-
-
+    print("dag_runs SUCCESS updated")
 # -------------------------------------
 # Failure Handler
 # -------------------------------------
 def mark_failed(context):
-    error = str(context["exception"])
-
     try:
-        conf = context["dag_run"].conf
-        file_id = conf.get("file_id")
-    except:
-        file_id = None
+        dag_run_id = context["run_id"]
 
-    try:
-        run_id = context["ti"].xcom_pull(key="run_id")
-    except:
-        run_id = None
+        conn = get_pg_conn()
+        cur = conn.cursor()
 
-    conn = get_pg_conn()
-    cur = conn.cursor()
-
-    if file_id:
         cur.execute("""
-            UPDATE files_master
-            SET status='FAILED', error_message=%s
-            WHERE id=%s;
-        """, (error, file_id))
+            UPDATE dag_runs
+            SET status_id = 4
+            WHERE dag_run_id = %s;
+        """, (dag_run_id,))
 
-    if run_id:
-        cur.execute("""
-            UPDATE file_runs
-            SET status='FAILED', completed_at=NOW(), error_message=%s
-            WHERE id=%s;
-        """, (error, run_id))
+        conn.commit()
+        cur.close()
+        conn.close()
 
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    print("FAILED updated")
-
-
+        print("dag_runs FAILED updated")
+    except Exception as e:
+        print("Failure handler error:", e)   
 # -------------------------------------
 # DAG
 # -------------------------------------
