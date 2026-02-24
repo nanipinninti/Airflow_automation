@@ -1,4 +1,6 @@
--- Functions
+-- =========================================
+-- FUNCTIONS
+-- =========================================
 
 DROP FUNCTION IF EXISTS update_modified_at() CASCADE;
 
@@ -10,23 +12,27 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP FUNCTION IF EXISTS notify_student_change() CASCADE;
 
+DROP FUNCTION IF EXISTS notify_student_change() CASCADE;
 
 CREATE OR REPLACE FUNCTION notify_student_change()
 RETURNS trigger AS $$
 BEGIN
-  PERFORM pg_notify('student_events', json_build_object(
-    'operation', TG_OP,
-    'timestamp', NOW()
-  )::text);
-  
-  -- For statement-level triggers, RETURN NULL is appropriate
+  PERFORM pg_notify(
+    'student_events',
+    json_build_object(
+      'operation', TG_OP,
+      'timestamp', NOW()
+    )::text
+  );
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
 
-----------------------------------------------------------------------------------
+
+-- =========================================
+-- STUDENTS
+-- =========================================
 
 CREATE TABLE students (
     id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -37,9 +43,7 @@ CREATE TABLE students (
     modified_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Triggers on students TABLE
-
-DROP TRIGGER IF EXISTS student_change_trigger ON students;
+DROP TRIGGER IF EXISTS trg_update_modified_at_students ON students;
 
 CREATE TRIGGER trg_update_modified_at_students
 BEFORE UPDATE ON students
@@ -54,7 +58,9 @@ FOR EACH STATEMENT
 EXECUTE FUNCTION notify_student_change();
 
 
--------------------------------------------------------------------------------------
+-- =========================================
+-- CLIENTS
+-- =========================================
 
 CREATE TABLE clients (
     id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -71,13 +77,16 @@ BEFORE UPDATE ON clients
 FOR EACH ROW
 EXECUTE FUNCTION update_modified_at();
 
-----------------------------------------------------------------------------------
+
+-- =========================================
+-- STATUS MASTER
+-- =========================================
 
 CREATE TABLE status_master (
     id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     description TEXT,
-    category VARCHAR(20) NOT NULL, -- success / failure / pending etc
+    category VARCHAR(20) NOT NULL,
     created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     modified_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -85,22 +94,26 @@ CREATE TABLE status_master (
 DROP TRIGGER IF EXISTS trg_update_modified_at_status_master ON status_master;
 
 CREATE TRIGGER trg_update_modified_at_status_master
-BEFORE UPDATE ON status_master  
+BEFORE UPDATE ON status_master
 FOR EACH ROW
 EXECUTE FUNCTION update_modified_at();
---------------------------------------------------------------------------------
+
+
+-- =========================================
+-- FILES MASTER
+-- =========================================
 
 CREATE TABLE files_master (
-    id              UUID PRIMARY KEY,
-    client_id       INT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
-    filename        TEXT NOT NULL,
-    bucket          TEXT NOT NULL,
-    path            TEXT NOT NULL,
-    source          TEXT NOT NULL,
-    size_bytes      BIGINT,
-    uploaded_at     TIMESTAMP WITH TIME ZONE DEFAULT NOW(),    
+    id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    client_id INT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    path TEXT NOT NULL,
+    source TEXT NOT NULL,
+    size_bytes BIGINT,
+    uploaded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     status_id INT NOT NULL REFERENCES status_master(id) ON DELETE CASCADE,
-    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     modified_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
@@ -111,14 +124,17 @@ BEFORE UPDATE ON files_master
 FOR EACH ROW
 EXECUTE FUNCTION update_modified_at();
 
--------------------------------------------------------------------------------------
+
+-- =========================================
+-- DAG RUNS
+-- =========================================
 
 CREATE TABLE dag_runs (
-    dag_id VARCHAR(255) ,
+    dag_id VARCHAR(255),
     dag_run_id VARCHAR(255) PRIMARY KEY,
-    file_id UUID NOT NULL REFERENCES files_master(id) ON DELETE CASCADE,
+    file_id INT NOT NULL REFERENCES files_master(id) ON DELETE CASCADE,
     status_id INT NOT NULL REFERENCES status_master(id) ON DELETE CASCADE,
-    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     modified_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
@@ -129,4 +145,12 @@ BEFORE UPDATE ON dag_runs
 FOR EACH ROW
 EXECUTE FUNCTION update_modified_at();
 
-----------------------------------------------------------------------------------
+
+-- =========================================
+-- OPTIONAL INDEXES (performance)
+-- =========================================
+
+CREATE INDEX IF NOT EXISTS idx_files_master_client_id ON files_master(client_id);
+CREATE INDEX IF NOT EXISTS idx_files_master_status_id ON files_master(status_id);
+CREATE INDEX IF NOT EXISTS idx_dag_runs_file_id ON dag_runs(file_id);
+CREATE INDEX IF NOT EXISTS idx_dag_runs_status_id ON dag_runs(status_id);
